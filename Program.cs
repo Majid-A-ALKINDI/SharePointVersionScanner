@@ -341,7 +341,7 @@ class Program
         Console.WriteLine("------------------------------------------------------------------------------------------------------------------------");
         Console.WriteLine("|");
         Console.WriteLine("|                                           SharePoint Version Scanner v1.2                                            |");
-        Console.WriteLine("|                                      Built by Majed alkindi & Mohammed Alasfar                                       |");
+        Console.WriteLine("|                                      Built by Majed alkindi                                                          |");
         Console.WriteLine("|");
         Console.WriteLine("|                              This script checks SharePoint endpoints and version hints                               |");
         Console.WriteLine("|                                       using ProcessQuery and response headers                                        |");
