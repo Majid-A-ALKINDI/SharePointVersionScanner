@@ -10,7 +10,7 @@ The application will prompt you to choose how to provide the SharePoint site URL
 1. **Type the target URLs**: Enter URLs manually, one per line, and press Enter on an empty line to finish.
 2. **Select target file**: Provide the path to a text file. The app will extract all URLs (starting with http:// or https://) from the file content and scan them.
 
-The application will then scan each URL and output the SharePoint version based on the LibraryVersion. It provides verbose output showing request details, response status, headers, and body for each scan. The POST request includes necessary headers like X-RequestDigest, User-Agent, and cookies for SharePoint authentication and compatibility.
+The application will then scan each URL and output the SharePoint version based on the LibraryVersion. It provides verbose output showing request details, response status, headers, and body for each scan. 
 
 ## Requirements
 
