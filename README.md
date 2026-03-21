@@ -1,6 +1,6 @@
 # SharePoint Version Scanner
 
-A C# console application that scans a list of SharePoint hosts to determine their version by making POST requests to `/en/_vti_bin/client.svc/ProcessQuery`.
+A C# console application that scans a list of SharePoint hosts to determine their version .
 
 ## Usage
 
