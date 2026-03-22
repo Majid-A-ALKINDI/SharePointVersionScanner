@@ -4,12 +4,14 @@ using System.Text.Json;
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Net.Http.Headers;
+using System.Net;
 
 class Program
 {
     static async Task Main(string[] args)
     {
         PrintBanner();
+        await FetchAndPrintLatestUpdates();
         Console.WriteLine("Choose an option:");
         Console.WriteLine("1: Type the target URLs");
         Console.WriteLine("2: Select target URL file");
@@ -34,9 +36,7 @@ class Program
             if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
             {
                 string content = File.ReadAllText(filePath);
-                var urlRegex = new Regex(@"https?://[^\s]+", RegexOptions.IgnoreCase);
-                var matches = urlRegex.Matches(content);
-                hosts = matches.Select(m => m.Value.TrimEnd(',', '.', ';')).ToList();
+                hosts = ExtractHttpsHostsFromText(content);
             }
             else
             {
@@ -59,9 +59,42 @@ class Program
         Console.Write("Enable verbose output? (y/n): ");
         bool verbose = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
 
+        Console.Write("Ignore SSL certificate errors? (y/n): ");
+        bool ignoreSslErrors = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+
+        Console.Write("Save output to file? (y/n): ");
+        bool saveOutput = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+        string outputPath = string.Empty;
+        var outputLines = new List<string>();
+
+        if (saveOutput)
+        {
+            Console.Write("Enter output file path (default: output.txt): ");
+            outputPath = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                outputPath = "output.txt";
+            }
+
+            outputPath = Path.GetFullPath(outputPath);
+            Console.WriteLine($"Output will be saved to: {outputPath}");
+
+            outputLines.Add("SharePoint Version Scanner Results");
+            outputLines.Add($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            outputLines.Add(new string('=', 120));
+        }
+
         Console.WriteLine($"Found {hosts.Count} hosts to scan.");
 
-        using var client = new HttpClient();
+        using var clientHandler = new HttpClientHandler
+        {
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+        };
+        if (ignoreSslErrors)
+        {
+            clientHandler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+        }
+        using var client = new HttpClient(clientHandler);
 
         for (int i = 0; i < hosts.Count; i++)
         {
@@ -101,7 +134,6 @@ class Program
                 request.Content = content;
                 request.Headers.Add("Accept", "*/*");
                 request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-                request.Headers.Add("Accept-Encoding", "gzip, deflate, br");
                 request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36");
                 request.Headers.Add("X-Requested-With", "XMLHttpRequest");
                 request.Headers.Add("X-RequestDigest", "0x8786E8C5E485BE472EB68BF2AFACA9F12732793250D757A734030E67B9DAC83CEC3C91B0690F4ACD08F8DF3785A50541965AB012E4D41A0F9BDB293C82E83F77,21 Mar 2026 17:03:06 -0000");
@@ -195,7 +227,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    errorMessage = ex.Message;
+                    errorMessage = GetDetailedErrorMessage(ex);
                     continue;
                 }
             }
@@ -269,7 +301,7 @@ class Program
                 }
                 catch (Exception ex)
                 {
-                    errorMessage = ex.Message;
+                    errorMessage = GetDetailedErrorMessage(ex);
                 }
             }
 
@@ -298,6 +330,11 @@ class Program
                 Console.ForegroundColor = originalColor;
                 Console.WriteLine();
                 Console.WriteLine("================================================================================================================================================");
+
+                if (saveOutput)
+                {
+                    outputLines.Add($"Host: {host}, LibraryVersion: {version}, Version: {versionName}");
+                }
             }
             else
             {
@@ -311,8 +348,169 @@ class Program
                 Console.ForegroundColor = originalColor;
                 Console.WriteLine();
                 Console.WriteLine("================================================================================================================================================");
+
+                if (saveOutput)
+                {
+                    outputLines.Add($"Host: {host}, Error: {errorMessage ?? "No SharePoint version detected"}");
+                }
             }
         }
+
+        if (saveOutput)
+        {
+            try
+            {
+                File.WriteAllLines(outputPath, outputLines);
+                Console.WriteLine($"Output saved to: {outputPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Failed to save output file: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+    }
+
+    static async Task FetchAndPrintLatestUpdates()
+    {
+        try
+        {
+            using var http = new HttpClient();
+            http.Timeout = TimeSpan.FromSeconds(15);
+
+            using var req = new HttpRequestMessage(HttpMethod.Get,
+                "https://learn.microsoft.com/en-us/officeupdates/sharepoint-updates");
+            req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            req.Headers.Add("Accept", "text/html,application/xhtml+xml");
+            req.Headers.Add("Accept-Language", "en-US,en;q=0.9");
+
+            var fetchTask = http.SendAsync(req);
+
+            int step = 0;
+            while (!fetchTask.IsCompleted)
+            {
+                step++;
+                if (step > 5) step = 1;
+                var meter = new string('=', step) + new string('.', 5 - step);
+                var statusLine = $"  Fetching latest SharePoint updates... [{meter}]";
+                Console.Write("\r" + statusLine.PadRight(Console.WindowWidth > 0 ? Console.WindowWidth - 1 : statusLine.Length));
+                await Task.Delay(200);
+            }
+
+            var res = await fetchTask;
+            var html = await res.Content.ReadAsStringAsync();
+
+            var doneLine = "  Fetching latest SharePoint updates... done.";
+            Console.Write("\r" + doneLine.PadRight(Console.WindowWidth > 0 ? Console.WindowWidth - 1 : doneLine.Length));
+            Console.WriteLine();
+            Console.WriteLine();
+
+            var sections = new[]
+            {
+                ("SharePoint Server Subscription Edition update history", "SharePoint Server Subscription Edition"),
+                ("SharePoint 2019 update history", "SharePoint Server 2019"),
+                ("SharePoint 2016 update history", "SharePoint Server 2016")
+            };
+
+            Console.WriteLine("  Latest SharePoint Updates  (source: learn.microsoft.com/en-us/officeupdates/sharepoint-updates)");
+            Console.WriteLine("  " + new string('-', 97));
+            Console.WriteLine("  " + "Product".PadRight(42) + "KB".PadRight(14) + "Version".PadRight(22) + "Date");
+            Console.WriteLine("  " + new string('-', 97));
+
+            bool anyFound = false;
+            foreach (var (sectionTitle, label) in sections)
+            {
+                var sectionIdx = html.IndexOf(sectionTitle, StringComparison.OrdinalIgnoreCase);
+                if (sectionIdx < 0) continue;
+
+                var slice = html.Substring(sectionIdx);
+
+                var kbMatch = Regex.Match(slice, @"KB\s+(\d+)", RegexOptions.IgnoreCase);
+                if (!kbMatch.Success) continue;
+
+                var afterKb = slice.Substring(kbMatch.Index);
+                var versionMatch = Regex.Match(afterKb, @"(\d+\.\d+\.\d+\.\d+)");
+                if (!versionMatch.Success) continue;
+
+                var afterVersion = afterKb.Substring(versionMatch.Index);
+                var dateMatch = Regex.Match(afterVersion,
+                    @"((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:\d+,\s+\d{4}|\d{4}))");
+                if (!dateMatch.Success) continue;
+
+                var kb = "KB " + kbMatch.Groups[1].Value;
+                var version = versionMatch.Groups[1].Value;
+                var date = dateMatch.Groups[1].Value.Trim();
+
+                var orig = Console.ForegroundColor;
+                Console.Write("  " + label.PadRight(42));
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write(kb.PadRight(14));
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write(version.PadRight(22));
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.Write(date);
+                Console.ForegroundColor = orig;
+                Console.WriteLine();
+                anyFound = true;
+            }
+
+            if (!anyFound)
+                Console.WriteLine("  (No update data found — page structure may have changed)");
+
+            Console.WriteLine("  " + new string('-', 97));
+            Console.WriteLine();
+        }
+        catch (TaskCanceledException)
+        {
+            var msg = "  Fetching latest SharePoint updates... (timed out, skipping)";
+            Console.Write("\r" + msg.PadRight(Console.WindowWidth > 0 ? Console.WindowWidth - 1 : msg.Length));
+            Console.WriteLine();
+            Console.WriteLine();
+        }
+        catch (Exception ex)
+        {
+            var msg = $"  Fetching latest SharePoint updates... (skipped: {ex.Message})";
+            Console.Write("\r" + msg.PadRight(Console.WindowWidth > 0 ? Console.WindowWidth - 1 : msg.Length));
+            Console.WriteLine();
+            Console.WriteLine();
+        }
+    }
+
+    static List<string> ExtractHttpsHostsFromText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new List<string>();
+        }
+
+        // Extract domains or IPv4 values and normalize them to https://host
+        var hostRegex = new Regex(@"((?:\d{1,3}\.){3}\d{1,3}|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})",
+            RegexOptions.IgnoreCase);
+
+        var hosts = hostRegex.Matches(text)
+            .Select(m => m.Groups[1].Value.Trim().TrimEnd(',', '.', ';'))
+            .Where(h => !string.IsNullOrWhiteSpace(h))
+            .Select(h => $"https://{h}")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return hosts;
+    }
+
+    static string GetDetailedErrorMessage(Exception ex)
+    {
+        if (ex == null)
+        {
+            return "Unknown error";
+        }
+
+        if (ex.InnerException != null && !string.IsNullOrWhiteSpace(ex.InnerException.Message))
+        {
+            return $"{ex.Message} (Inner: {ex.InnerException.Message})";
+        }
+
+        return ex.Message;
     }
 
     static string DetermineSharePointVersion(string libraryVersion)
@@ -341,7 +539,7 @@ class Program
         Console.WriteLine("------------------------------------------------------------------------------------------------------------------------");
         Console.WriteLine("|");
         Console.WriteLine("|                                           SharePoint Version Scanner v1.2                                            |");
-        Console.WriteLine("|                                                Built by Majed alkindi                                                |");
+        Console.WriteLine("|                                                 Built by Majid alkindi                                               |");
         Console.WriteLine("|");
         Console.WriteLine("|                              This script checks SharePoint endpoints and version hints                               |");
         Console.WriteLine("|                                       using ProcessQuery and response headers                                        |");
