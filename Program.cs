@@ -12,13 +12,150 @@ class Program
     {
         PrintBanner();
         await FetchAndPrintLatestUpdates();
-        Console.WriteLine("Choose an option:");
-        Console.WriteLine("1: Type the target URLs");
-        Console.WriteLine("2: Select target URL file");
-        Console.Write("Enter your choice (1 or 2): ");
-        string choice = Console.ReadLine()?.Trim();
+        while (true)
+        {
+            Console.WriteLine("Choose an option:");
+            WriteMenuOption("1", "Type the target URLs", ConsoleColor.Cyan);
+            WriteMenuOption("2", "Select target URL file", ConsoleColor.Cyan);
+            WriteMenuOption("3", "Filter output file by SharePoint version", ConsoleColor.Cyan);
+            WriteMenuOption("0", "Exit", ConsoleColor.DarkYellow);
+            Console.Write("Enter your choice (0, 1, 2, or 3): ");
+            string choice = Console.ReadLine()?.Trim();
 
-        List<string> hosts = new List<string>();
+            if (choice == "0")
+            {
+                Console.WriteLine("Exiting...");
+                break;
+            }
+
+            if (choice == "3")
+            {
+                Console.Write("Enter the path to the output file (default: output.txt): ");
+                string outputFilePath = Console.ReadLine()?.Trim();
+                if (string.IsNullOrWhiteSpace(outputFilePath))
+                    outputFilePath = "output.txt";
+
+                outputFilePath = Path.GetFullPath(outputFilePath);
+
+                if (!File.Exists(outputFilePath))
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"File not found: {outputFilePath}");
+                    Console.ResetColor();
+                    continue;
+                }
+
+            Console.WriteLine("Select filter type:");
+            WriteMenuOption("1", "SharePoint Server Subscription Edition", ConsoleColor.Green);
+            WriteMenuOption("2", "SharePoint Server 2019", ConsoleColor.Green);
+            WriteMenuOption("3", "SharePoint Server 2016", ConsoleColor.Green);
+            WriteMenuOption("4", "Error or Unknown host", ConsoleColor.Red);
+            Console.Write("Enter your choice (1, 2, 3, or 4): ");
+            string versionChoice = Console.ReadLine()?.Trim();
+
+            string filterKeyword = versionChoice switch
+            {
+                "1" => "Subscription",
+                "2" => "2019",
+                "3" => "2016",
+                "4" => "ERROR_OR_UNKNOWN",
+                _ => null
+            };
+
+                if (filterKeyword == null)
+                {
+                    Console.WriteLine("Invalid choice.");
+                    continue;
+                }
+
+            string versionLabel = versionChoice switch
+            {
+                "1" => "SharePoint Server Subscription Edition",
+                "2" => "SharePoint Server 2019",
+                "3" => "SharePoint Server 2016",
+                "4" => "Error or Unknown host",
+                _ => ""
+            };
+
+                bool useLessThanFilter = false;
+                Version thresholdVersion = null;
+                if (versionChoice is "1" or "2" or "3")
+                {
+                    Console.WriteLine("Choose action:");
+                    WriteMenuOption("1", "Print all matching versions", ConsoleColor.Cyan);
+                    WriteMenuOption("2", "Look for versions less than a value", ConsoleColor.Yellow);
+                    Console.Write("Enter your choice (1 or 2): ");
+                    string actionChoice = Console.ReadLine()?.Trim();
+
+                    if (actionChoice == "2")
+                    {
+                        Console.Write("Enter version threshold (example: 16.0.10417.20027): ");
+                        string thresholdText = Console.ReadLine()?.Trim();
+                        if (!TryParseVersion(thresholdText, out thresholdVersion))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("Invalid version format. Use numbers like 16.0.10417.20027");
+                            Console.ResetColor();
+                            continue;
+                        }
+                        useLessThanFilter = true;
+                    }
+                    else if (actionChoice != "1")
+                    {
+                        Console.WriteLine("Invalid choice.");
+                        continue;
+                    }
+                }
+
+                var lines = File.ReadAllLines(outputFilePath);
+                var matches = lines
+                    .Where(l => l.StartsWith("Host:", StringComparison.OrdinalIgnoreCase)
+                             && (filterKeyword == "ERROR_OR_UNKNOWN"
+                                 ? l.Contains("Error:", StringComparison.OrdinalIgnoreCase)
+                                   || l.Contains("Unknown", StringComparison.OrdinalIgnoreCase)
+                                 : l.Contains(filterKeyword, StringComparison.OrdinalIgnoreCase)))
+                    .ToList();
+
+                if (useLessThanFilter)
+                {
+                    matches = matches
+                        .Where(l => IsVersionLessThan(l, thresholdVersion))
+                        .ToList();
+                }
+
+                Console.WriteLine();
+                Console.WriteLine($"Filtering: {outputFilePath}");
+                Console.WriteLine($"Results for: {versionLabel}");
+                if (useLessThanFilter)
+                {
+                    Console.WriteLine($"Condition: LibraryVersion < {thresholdVersion}");
+                }
+                Console.WriteLine(new string('=', 120));
+
+                if (matches.Count == 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("No matching entries found.");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    foreach (var line in matches)
+                    {
+                        PrintColoredFileResultLine(line);
+                    }
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine($"Total matches: {matches.Count}");
+                    Console.ResetColor();
+                }
+
+                Console.WriteLine(new string('=', 120));
+                Console.WriteLine();
+                continue;
+            }
+
+            List<string> hosts = new List<string>();
 
         if (choice == "1")
         {
@@ -29,32 +166,32 @@ class Program
                 hosts.Add(url.Trim());
             }
         }
-        else if (choice == "2")
-        {
-            Console.Write("Enter the path to the file containing URLs: ");
-            string filePath = Console.ReadLine()?.Trim();
-            if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+            else if (choice == "2")
             {
-                string content = File.ReadAllText(filePath);
-                hosts = ExtractHttpsHostsFromText(content);
+                Console.Write("Enter the path to the file containing URLs: ");
+                string filePath = Console.ReadLine()?.Trim();
+                if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                {
+                    string content = File.ReadAllText(filePath);
+                    hosts = ExtractHttpsHostsFromText(content);
+                }
+                else
+                {
+                    Console.WriteLine("Invalid file path.");
+                    continue;
+                }
             }
             else
             {
-                Console.WriteLine("Invalid file path.");
-                return;
+                Console.WriteLine("Invalid choice.");
+                continue;
             }
-        }
-        else
-        {
-            Console.WriteLine("Invalid choice.");
-            return;
-        }
 
-        if (hosts.Count == 0)
-        {
-            Console.WriteLine("No hosts provided.");
-            return;
-        }
+            if (hosts.Count == 0)
+            {
+                Console.WriteLine("No hosts provided.");
+                continue;
+            }
 
         Console.Write("Enable verbose output? (y/n): ");
         bool verbose = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
@@ -356,19 +493,24 @@ class Program
             }
         }
 
-        if (saveOutput)
-        {
-            try
+            if (saveOutput)
             {
-                File.WriteAllLines(outputPath, outputLines);
-                Console.WriteLine($"Output saved to: {outputPath}");
+                try
+                {
+                    File.WriteAllLines(outputPath, outputLines);
+                    Console.WriteLine($"Output saved to: {outputPath}");
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Failed to save output file: {ex.Message}");
+                    Console.ResetColor();
+                }
             }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Failed to save output file: {ex.Message}");
-                Console.ResetColor();
-            }
+
+            Console.WriteLine();
+            Console.WriteLine("Scan completed. Returning to main menu...");
+            Console.WriteLine();
         }
     }
 
@@ -520,31 +662,56 @@ class Program
         var parts = libraryVersion.Split('.');
         if (parts.Length < 2) return "Unknown";
 
-        int major = int.Parse(parts[0]);
-        int minor = int.Parse(parts[1]);
+        if (!int.TryParse(parts[0], out int major) || !int.TryParse(parts[1], out int minor))
+            return $"Unknown (LibraryVersion: {libraryVersion})";
 
-        return (major, minor) switch
+        if (major == 14) return "SharePoint Server 2010";
+        if (major == 15) return "SharePoint Server 2013";
+
+        if (major == 16 && minor == 0 && parts.Length >= 3)
         {
-            (14, _) => "SharePoint 2010",
-            (15, _) => "SharePoint 2013",
-            (16, 0) => "SharePoint 2016/2019/Online/SE",
-            (16, _) => "SharePoint Online or 2019",
-            (17, _) => "SharePoint Server Subscription Edition",
-            _ => $"Unknown (LibraryVersion: {libraryVersion})"
-        };
+            var build = parts[2];
+            // Identify SharePoint 16.0 by the build number's prefix
+            // 16.0.19xxx => SharePoint Server Subscription Edition
+            // 16.0.10xxx => SharePoint Server 2019
+            // 16.0.5xxx  => SharePoint Server 2016
+            if (build.StartsWith("19")) return "SharePoint Server Subscription Edition";
+            if (build.StartsWith("10")) return "SharePoint Server 2019";
+            if (build.StartsWith("5"))  return "SharePoint Server 2016";
+            return $"SharePoint 16.0 (build: {libraryVersion})";
+        }
+
+        if (major == 17) return "SharePoint Server Subscription Edition";
+
+        return $"Unknown (LibraryVersion: {libraryVersion})";
     }
 
     static void PrintBanner()
     {
+        var originalColor = Console.ForegroundColor;
+
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
         Console.WriteLine("------------------------------------------------------------------------------------------------------------------------");
         Console.WriteLine("|");
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("|                                           SharePoint Version Scanner v1.2                                            |");
+
+        Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("|                                                 Built by Majid alkindi                                               |");
+
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
         Console.WriteLine("|");
+
+        Console.ForegroundColor = ConsoleColor.Gray;
         Console.WriteLine("|                              This script checks SharePoint endpoints and version hints                               |");
         Console.WriteLine("|                                       using ProcessQuery and response headers                                        |");
+
+        Console.ForegroundColor = ConsoleColor.DarkCyan;
         Console.WriteLine("|");
         Console.WriteLine("------------------------------------------------------------------------------------------------------------------------");
+
+        Console.ForegroundColor = originalColor;
     }
 
     static string ExtractVersionFromHeaders(HttpResponseHeaders headers)
@@ -589,5 +756,100 @@ class Program
         }
 
         return null;
+    }
+
+    static bool IsVersionLessThan(string outputLine, Version threshold)
+    {
+        if (threshold == null || string.IsNullOrWhiteSpace(outputLine))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(outputLine, @"LibraryVersion:\s*([^,]+)", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var versionText = match.Groups[1].Value.Trim();
+        if (!TryParseVersion(versionText, out var lineVersion))
+        {
+            return false;
+        }
+
+        return lineVersion < threshold;
+    }
+
+    static bool TryParseVersion(string value, out Version version)
+    {
+        version = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(value.Trim(), @"^\d+\.\d+\.\d+\.\d+$");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        return Version.TryParse(match.Value, out version);
+    }
+
+    static void WriteMenuOption(string key, string label, ConsoleColor textColor)
+    {
+        var originalColor = Console.ForegroundColor;
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.Write($"{key}: ");
+        Console.ForegroundColor = textColor;
+        Console.WriteLine(label);
+        Console.ForegroundColor = originalColor;
+    }
+
+    static void PrintColoredFileResultLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return;
+        }
+
+        var originalColor = Console.ForegroundColor;
+
+        if (line.Contains("Error:", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("Unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine(line);
+            Console.ForegroundColor = originalColor;
+            return;
+        }
+
+        var hostMatch = Regex.Match(line, @"Host:\s*([^,]+)", RegexOptions.IgnoreCase);
+        var libMatch = Regex.Match(line, @"LibraryVersion:\s*([^,]+)", RegexOptions.IgnoreCase);
+        var versionMatch = Regex.Match(line, @"Version:\s*(.+)$", RegexOptions.IgnoreCase);
+
+        if (hostMatch.Success || libMatch.Success || versionMatch.Success)
+        {
+            Console.Write("Host: ");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write(hostMatch.Success ? hostMatch.Groups[1].Value.Trim() : "N/A");
+            Console.ForegroundColor = originalColor;
+
+            Console.Write(", LibraryVersion: ");
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write(libMatch.Success ? libMatch.Groups[1].Value.Trim() : "N/A");
+            Console.ForegroundColor = originalColor;
+
+            Console.Write(", Version: ");
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine(versionMatch.Success ? versionMatch.Groups[1].Value.Trim() : "N/A");
+            Console.ForegroundColor = originalColor;
+            return;
+        }
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine(line);
+        Console.ForegroundColor = originalColor;
     }
 }
