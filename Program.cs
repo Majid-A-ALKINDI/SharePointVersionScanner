@@ -174,6 +174,21 @@ class Program
                 {
                     string content = File.ReadAllText(filePath);
                     hosts = ExtractHttpsHostsFromText(content);
+
+                    var deduplicatedHosts = hosts
+                        .Select(h => h.Trim().TrimEnd('/'))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    int duplicateCount = hosts.Count - deduplicatedHosts.Count;
+                    hosts = deduplicatedHosts;
+
+                    if (duplicateCount > 0)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"Removed {duplicateCount} duplicate URL(s) from file.");
+                        Console.ResetColor();
+                    }
                 }
                 else
                 {
@@ -221,6 +236,30 @@ class Program
             outputLines.Add(new string('=', 120));
         }
 
+        Console.Write("Save output as HTML report? (y/n): ");
+        bool saveHtml = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+        string htmlOutputPath = string.Empty;
+        bool includeServerEvidenceInHtml = false;
+        bool includeVersionDetailsInHtml = true;
+        var htmlResults = new List<HtmlScanResult>();
+
+        if (saveHtml)
+        {
+            Console.Write("Enter HTML output file path (default: output.html): ");
+            htmlOutputPath = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(htmlOutputPath))
+                htmlOutputPath = "output.html";
+            htmlOutputPath = Path.GetFullPath(htmlOutputPath);
+            Console.WriteLine($"HTML report will be saved to: {htmlOutputPath}");
+
+            Console.Write("Include server evidence in HTML (request headers + response body)? (y/n): ");
+            includeServerEvidenceInHtml = string.Equals(Console.ReadLine()?.Trim(), "y", StringComparison.OrdinalIgnoreCase);
+
+            Console.Write("Include detailed version notes in HTML? (y/n, default: y): ");
+            var versionDetailsInput = Console.ReadLine()?.Trim();
+            includeVersionDetailsInHtml = !string.Equals(versionDetailsInput, "n", StringComparison.OrdinalIgnoreCase);
+        }
+
         Console.WriteLine($"Found {hosts.Count} hosts to scan.");
 
         using var clientHandler = new HttpClientHandler
@@ -244,6 +283,11 @@ class Program
             string versionName = null;
             string errorMessage = null;
             string headerDetectedVersionName = null;
+            string pocPath = null;
+            string reportRequestHeaders = string.Empty;
+            string reportResponseStatus = string.Empty;
+            string reportResponseBody = string.Empty;
+            string reportVersionDetails = string.Empty;
 
             foreach (var pathSuffix in paths)
             {
@@ -286,6 +330,7 @@ class Program
                 request.Headers.Add("Host", new Uri(host).Host);
                 request.Headers.Add("Origin", host);
                 request.Headers.Add("Referer", $"{host}/Pages/default.aspx");
+                var requestHeadersForReport = BuildRequestHeadersForReport(request, body);
 
                 if (verbose)
                 {
@@ -320,6 +365,9 @@ class Program
                     Console.WriteLine();
 
                     var responseBody = await response.Content.ReadAsStringAsync();
+                    reportRequestHeaders = requestHeadersForReport;
+                    reportResponseStatus = $"{(int)response.StatusCode} {response.StatusCode}";
+                    reportResponseBody = TrimForReport(responseBody, 6000);
 
                     if (verbose)
                     {
@@ -340,6 +388,8 @@ class Program
                                 version = libVersion.GetString();
                                 versionName = DetermineSharePointVersion(version);
                                 versionFound = true;
+                                pocPath = url;
+                                reportVersionDetails = $"LibraryVersion={version}; Product={versionName}; Detection=ProcessQuery(JSON LibraryVersion)";
                                 break;
                             }
                         }
@@ -379,6 +429,7 @@ class Program
                 contextInfoRequest.Headers.Add("Host", new Uri(host).Host);
                 contextInfoRequest.Headers.Add("Origin", host);
                 contextInfoRequest.Headers.Add("Referer", $"{host}/Pages/default.aspx");
+                var contextRequestHeadersForReport = BuildRequestHeadersForReport(contextInfoRequest, string.Empty);
 
                 if (verbose)
                 {
@@ -412,6 +463,9 @@ class Program
                     Console.WriteLine();
 
                     var responseBody = await response.Content.ReadAsStringAsync();
+                    reportRequestHeaders = contextRequestHeadersForReport;
+                    reportResponseStatus = $"{(int)response.StatusCode} {response.StatusCode}";
+                    reportResponseBody = TrimForReport(responseBody, 6000);
 
                     if (verbose)
                     {
@@ -426,6 +480,8 @@ class Program
                         version = contextLibraryVersion;
                         versionName = DetermineSharePointVersion(version);
                         versionFound = true;
+                        pocPath = contextInfoUrl;
+                        reportVersionDetails = $"LibraryVersion={version}; Product={versionName}; Detection=contextinfo XML d:LibraryVersion";
                     }
                     else if (response.Headers.Contains("SPRequestGuid"))
                     {
@@ -448,6 +504,8 @@ class Program
                 version = "(detected from headers)";
                 versionName = headerDetectedVersionName;
                 versionFound = true;
+                pocPath = "(detected from response headers)";
+                reportVersionDetails = $"LibraryVersion={version}; Product={versionName}; Detection=response headers";
             }
 
             // After trying all paths, print the final result
@@ -472,6 +530,21 @@ class Program
                 {
                     outputLines.Add($"Host: {host}, LibraryVersion: {version}, Version: {versionName}");
                 }
+                if (saveHtml)
+                {
+                    htmlResults.Add(new HtmlScanResult
+                    {
+                        Domain = host,
+                        LibraryVersion = version,
+                        VersionName = versionName,
+                        POC = pocPath ?? "N/A",
+                        IsError = false,
+                        RequestHeaders = reportRequestHeaders,
+                        ResponseStatus = reportResponseStatus,
+                        ResponseBody = reportResponseBody,
+                        VersionDetails = reportVersionDetails
+                    });
+                }
             }
             else
             {
@@ -490,23 +563,55 @@ class Program
                 {
                     outputLines.Add($"Host: {host}, Error: {errorMessage ?? "No SharePoint version detected"}");
                 }
+                if (saveHtml)
+                {
+                    htmlResults.Add(new HtmlScanResult
+                    {
+                        Domain = host,
+                        LibraryVersion = null,
+                        VersionName = errorMessage ?? "No SharePoint version detected",
+                        POC = null,
+                        IsError = true,
+                        RequestHeaders = reportRequestHeaders,
+                        ResponseStatus = reportResponseStatus,
+                        ResponseBody = reportResponseBody,
+                        VersionDetails = "Detection failed"
+                    });
+                }
             }
         }
 
-            if (saveOutput)
+        if (saveOutput)
+        {
+            try
             {
-                try
-                {
-                    File.WriteAllLines(outputPath, outputLines);
-                    Console.WriteLine($"Output saved to: {outputPath}");
-                }
-                catch (Exception ex)
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine($"Failed to save output file: {ex.Message}");
-                    Console.ResetColor();
-                }
+                File.WriteAllLines(outputPath, outputLines);
+                Console.WriteLine($"Output saved to: {outputPath}");
             }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Failed to save output file: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+
+        if (saveHtml)
+        {
+            try
+            {
+                File.WriteAllText(
+                    htmlOutputPath,
+                    GenerateHtmlReport(htmlResults, includeServerEvidenceInHtml, includeVersionDetailsInHtml));
+                Console.WriteLine($"HTML report saved to: {htmlOutputPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Failed to save HTML report: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
 
             Console.WriteLine();
             Console.WriteLine("Scan completed. Returning to main menu...");
@@ -851,5 +956,235 @@ class Program
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine(line);
         Console.ForegroundColor = originalColor;
+    }
+
+    static string BuildRequestHeadersForReport(HttpRequestMessage request, string requestBody)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"{request.Method} {request.RequestUri}");
+
+        foreach (var header in request.Headers)
+        {
+            sb.AppendLine($"{header.Key}: {string.Join(", ", header.Value)}");
+        }
+
+        if (request.Content != null)
+        {
+            foreach (var header in request.Content.Headers)
+            {
+                sb.AppendLine($"{header.Key}: {string.Join(", ", header.Value)}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(requestBody))
+        {
+            sb.AppendLine();
+            sb.AppendLine(requestBody);
+        }
+
+        return sb.ToString();
+    }
+
+    static string TrimForReport(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+        {
+            return value ?? string.Empty;
+        }
+
+        return value.Substring(0, maxLength)
+            + $"\n\n[Output truncated for report. Original length: {value.Length} characters]";
+    }
+
+    static string GenerateHtmlReport(
+        List<HtmlScanResult> results,
+        bool includeServerEvidence,
+        bool includeVersionDetails)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<!DOCTYPE html>");
+        sb.AppendLine("<html lang=\"en\">");
+        sb.AppendLine("<head>");
+        sb.AppendLine("<meta charset=\"UTF-8\">");
+        sb.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">");
+        sb.AppendLine("<title>SharePoint Version Scanner Report</title>");
+        sb.AppendLine("<style>");
+        sb.AppendLine("  body{font-family:'Segoe UI',Arial,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:20px;}");
+        sb.AppendLine("  h1{color:#58a6ff;text-align:center;margin-bottom:4px;}");
+        sb.AppendLine("  .subtitle{text-align:center;color:#8b949e;margin-bottom:24px;font-size:.9em;}");
+        sb.AppendLine("  .summary{display:flex;gap:16px;justify-content:center;margin-bottom:24px;flex-wrap:wrap;}");
+        sb.AppendLine("  .summary-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 24px;text-align:center;}");
+        sb.AppendLine("  .summary-card .count{font-size:2em;font-weight:bold;}");
+        sb.AppendLine("  .summary-card .label{font-size:.85em;color:#8b949e;}");
+        sb.AppendLine("  .count-total{color:#58a6ff;}.count-success{color:#3fb950;}.count-error{color:#f85149;}");
+        sb.AppendLine("  table{width:100%;border-collapse:collapse;background:#161b22;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.4);}");
+        sb.AppendLine("  th{background:#21262d;color:#58a6ff;padding:12px 16px;text-align:left;font-size:.9em;text-transform:uppercase;letter-spacing:.05em;border-bottom:2px solid #30363d;}");
+        sb.AppendLine("  td{padding:10px 16px;border-bottom:1px solid #21262d;vertical-align:top;font-size:.9em;word-break:break-all;}");
+        sb.AppendLine("  tr:hover td{background:#1c2128;}tr:last-child td{border-bottom:none;}");
+        sb.AppendLine("  .domain{color:#58a6ff;font-weight:500;}");
+        sb.AppendLine("  .version-se{color:#ffa657;font-weight:600;}.version-2019{color:#3fb950;font-weight:600;}");
+        sb.AppendLine("  .version-2016{color:#79c0ff;font-weight:600;}.version-online{color:#bc8cff;font-weight:600;}");
+        sb.AppendLine("  .version-other{color:#c9d1d9;font-weight:600;}.version-error{color:#f85149;font-weight:600;}");
+        sb.AppendLine("  .lib-version{color:#e3b341;font-family:monospace;font-size:.88em;}");
+        sb.AppendLine("  .poc{color:#8b949e;font-size:.85em;font-family:monospace;}");
+        sb.AppendLine("  .idx{color:#8b949e;font-size:.85em;}");
+        sb.AppendLine("  .toc{background:#121a26;border:1px solid #2a3646;border-radius:10px;padding:14px 16px;margin:0 0 18px 0;}");
+        sb.AppendLine("  .toc h2{margin:0 0 10px 0;font-size:1rem;color:#93c5fd;}");
+        sb.AppendLine("  .toc-list{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:1fr;gap:6px;}");
+        sb.AppendLine("  .toc-item a{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:6px;background:#0f172a;color:#dbeafe;text-decoration:none;border:1px solid transparent;}");
+        sb.AppendLine("  .toc-item a:hover{border-color:#334155;background:#172036;}");
+        sb.AppendLine("  .toc-domain{font-weight:600;word-break:break-all;}");
+        sb.AppendLine("  .toc-page{color:#93c5fd;font-size:.85em;white-space:nowrap;}");
+        sb.AppendLine("  .details-cell{background:#0f1724;padding:0;border-bottom:1px solid #21262d;}");
+        sb.AppendLine("  .evidence-wrap{padding:12px 16px 16px 16px;border-top:1px dashed #30363d;}");
+        sb.AppendLine("  .evidence-grid{display:grid;grid-template-columns:1fr;gap:12px;}");
+        sb.AppendLine("  .detail-block{border:1px solid #2d333b;border-radius:8px;overflow:hidden;background:#111827;}");
+        sb.AppendLine("  .detail-title{padding:8px 12px;font-size:.82em;font-weight:700;letter-spacing:.03em;text-transform:uppercase;}");
+        sb.AppendLine("  .detail-title.request{background:#12314a;color:#7dd3fc;}");
+        sb.AppendLine("  .detail-title.response{background:#3c1f3e;color:#f0abfc;}");
+        sb.AppendLine("  .detail-title.version{background:#1f3d2b;color:#86efac;}");
+        sb.AppendLine("  .detail-body{margin:0;padding:10px 12px;color:#d1d5db;background:#0b1220;font:12px/1.4 Consolas,'Courier New',monospace;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;}");
+        sb.AppendLine("  .footer{text-align:center;color:#8b949e;margin-top:24px;font-size:.8em;}");
+        sb.AppendLine("</style>");
+        sb.AppendLine("</head>");
+        sb.AppendLine("<body>");
+        sb.AppendLine("<h1>SharePoint Version Scanner</h1>");
+        sb.AppendLine($"<div class=\"subtitle\">Report generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss} &nbsp;|&nbsp; Built by Majid alkindi</div>");
+
+        int total = results.Count;
+        int success = results.Count(r => !r.IsError);
+        int errors = results.Count(r => r.IsError);
+
+        sb.AppendLine("<div class=\"summary\">");
+        sb.AppendLine($"  <div class=\"summary-card\"><div class=\"count count-total\">{total}</div><div class=\"label\">Total Scanned</div></div>");
+        sb.AppendLine($"  <div class=\"summary-card\"><div class=\"count count-success\">{success}</div><div class=\"label\">Version Found</div></div>");
+        sb.AppendLine($"  <div class=\"summary-card\"><div class=\"count count-error\">{errors}</div><div class=\"label\">Error / Unknown</div></div>");
+        sb.AppendLine("</div>");
+
+        sb.AppendLine("<section class=\"toc\">\n  <h2>Table of Contents</h2>\n  <ul class=\"toc-list\">");
+        for (int i = 0; i < results.Count; i++)
+        {
+            var toc = results[i];
+            var targetId = (includeVersionDetails || includeServerEvidence)
+                ? $"evidence-{i + 1}"
+                : $"row-{i + 1}";
+            sb.AppendLine($"    <li class=\"toc-item\"><a href=\"#{targetId}\"><span class=\"toc-domain\">{HtmlEncode(toc.Domain)}</span><span class=\"toc-page\">Page {i + 1}</span></a></li>");
+        }
+        sb.AppendLine("  </ul>\n</section>");
+
+        sb.AppendLine("<table>");
+        sb.AppendLine("<thead><tr><th>#</th><th>Domain</th><th>Version</th><th>Library Version</th><th>POC (Where Found)</th></tr></thead>");
+        sb.AppendLine("<tbody>");
+
+        for (int i = 0; i < results.Count; i++)
+        {
+            var r = results[i];
+            string versionClass = r.IsError ? "version-error"
+                : r.VersionName?.Contains("Subscription") == true ? "version-se"
+                : r.VersionName?.Contains("2019") == true ? "version-2019"
+                : r.VersionName?.Contains("2016") == true ? "version-2016"
+                : r.VersionName?.Contains("Online") == true ? "version-online"
+                : "version-other";
+
+            string libHtml = r.IsError
+                ? "<span style=\"color:#8b949e\">N/A</span>"
+                : $"<span class=\"lib-version\">{HtmlEncode(r.LibraryVersion ?? "N/A")}</span>";
+
+            string pocHtml = r.IsError
+                ? "<span style=\"color:#8b949e\">N/A</span>"
+                : $"<span class=\"poc\">{HtmlEncode(r.POC ?? "N/A")}</span>";
+
+            string versionText = r.IsError ? (r.VersionName ?? "Error / Unknown") : (r.VersionName ?? "Unknown");
+
+            sb.AppendLine($"<tr id=\"row-{i + 1}\">");
+            sb.AppendLine($"  <td class=\"idx\">{i + 1}</td>");
+            sb.AppendLine($"  <td><a class=\"domain\" href=\"{HtmlEncode(r.Domain)}\" target=\"_blank\">{HtmlEncode(r.Domain)}</a></td>");
+            sb.AppendLine($"  <td><span class=\"{versionClass}\">{HtmlEncode(versionText)}</span></td>");
+            sb.AppendLine($"  <td>{libHtml}</td>");
+            sb.AppendLine($"  <td>{pocHtml}</td>");
+            sb.AppendLine("</tr>");
+
+            if (includeVersionDetails || includeServerEvidence)
+            {
+                sb.AppendLine($"<tr id=\"evidence-{i + 1}\">");
+                sb.AppendLine("  <td class=\"details-cell\" colspan=\"5\">");
+                sb.AppendLine("    <div class=\"evidence-wrap\">");
+                sb.AppendLine("      <div class=\"evidence-grid\">");
+
+                if (includeVersionDetails)
+                {
+                    var versionDetailText = string.IsNullOrWhiteSpace(r.VersionDetails)
+                        ? (r.IsError ? "No version details available (scan failed)." : "Version details not captured.")
+                        : r.VersionDetails;
+
+                    sb.AppendLine("        <div class=\"detail-block\">");
+                    sb.AppendLine("          <div class=\"detail-title version\">Version Details</div>");
+                    sb.AppendLine($"          <pre class=\"detail-body\">{HtmlEncode(versionDetailText)}</pre>");
+                    sb.AppendLine("        </div>");
+                }
+
+                if (includeServerEvidence)
+                {
+                    var requestText = string.IsNullOrWhiteSpace(r.RequestHeaders)
+                        ? "No request header captured."
+                        : r.RequestHeaders;
+
+                    var responseText = string.IsNullOrWhiteSpace(r.ResponseBody)
+                        ? "No response body captured."
+                        : r.ResponseBody;
+
+                    var responseStatus = string.IsNullOrWhiteSpace(r.ResponseStatus)
+                        ? "N/A"
+                        : r.ResponseStatus;
+
+                    sb.AppendLine("        <div class=\"detail-block\">");
+                    sb.AppendLine("          <div class=\"detail-title request\">Request Headers</div>");
+                    sb.AppendLine($"          <pre class=\"detail-body\">{HtmlEncode(requestText)}</pre>");
+                    sb.AppendLine("        </div>");
+
+                    sb.AppendLine("        <div class=\"detail-block\">");
+                    sb.AppendLine($"          <div class=\"detail-title response\">Response Body (HTTP {HtmlEncode(responseStatus)})</div>");
+                    sb.AppendLine($"          <pre class=\"detail-body\">{HtmlEncode(responseText)}</pre>");
+                    sb.AppendLine("        </div>");
+                }
+
+                sb.AppendLine("      </div>");
+                sb.AppendLine("    </div>");
+                sb.AppendLine("  </td>");
+                sb.AppendLine("</tr>");
+            }
+        }
+
+        sb.AppendLine("</tbody>");
+        sb.AppendLine("</table>");
+        sb.AppendLine("<div class=\"footer\">SharePoint Version Scanner &mdash; Built by Majid alkindi</div>");
+        sb.AppendLine("</body>");
+        sb.AppendLine("</html>");
+
+        return sb.ToString();
+    }
+
+    class HtmlScanResult
+    {
+        public string Domain { get; set; } = string.Empty;
+        public string? LibraryVersion { get; set; }
+        public string? VersionName { get; set; }
+        public string? POC { get; set; }
+        public bool IsError { get; set; }
+        public string? RequestHeaders { get; set; }
+        public string? ResponseStatus { get; set; }
+        public string? ResponseBody { get; set; }
+        public string? VersionDetails { get; set; }
+    }
+
+    static string HtmlEncode(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        return value
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;")
+            .Replace("\"", "&quot;")
+            .Replace("'", "&#39;");
     }
 }
