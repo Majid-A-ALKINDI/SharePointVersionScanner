@@ -6,6 +6,10 @@ A C# console tool that scans SharePoint hosts and detects version information us
 
 ![SharePoint Version Scanner](images/image1.png)
 
+### HTML Report Screenshot
+
+![HTML Report](images/report-image.jpg)
+
 ### Filter Output File Flow
 
 This screen shows the flow for:
@@ -25,6 +29,7 @@ This screen shows the flow for:
 - Supports two input modes:
   - Manual host entry
   - File input (extracts domains/IPs and normalizes to `https://...`)
+  - Automatically removes duplicate URLs before scanning when using file input
 - Tries version detection in this order:
   1. `/admin/_vti_bin/client.svc/ProcessQuery`
   2. `/en/_vti_bin/client.svc/ProcessQuery`
@@ -35,6 +40,12 @@ This screen shows the flow for:
 - Optional verbose mode (request/response details)
 - Optional SSL certificate bypass mode for diagnostics
 - Optional output saving to a text file (prints full save location)
+- Optional HTML report output with:
+  - Summary cards
+  - Version table (domain, mapped version, library version, POC path)
+  - Optional version-detail blocks
+  - Optional server-evidence blocks (request headers + response body)
+  - Clickable table of contents that jumps to each host section
 - Colored console output:
   - LibraryVersion in cyan
   - Version in green
@@ -105,12 +116,18 @@ Enter the path to the file containing URLs:
 
 2. It reads the file and extracts domains or IPs.
 3. Extracted values are normalized to `https://...`.
+4. Duplicate URLs are removed before scan starts.
+
+If duplicates are found, the tool prints:
+
+- `Removed <count> duplicate URL(s) from file.`
 
 After host collection, the tool prompts for:
 
 1. `Enable verbose output? (y/n):`
 2. `Ignore SSL certificate errors? (y/n):`
 3. `Save output to file? (y/n):`
+4. `Save output as HTML report? (y/n):`
 
 If saving is enabled, it then prompts:
 
@@ -121,6 +138,18 @@ Enter output file path (default: output.txt):
 The scanner prints the resolved full path before the scan begins:
 
 - `Output will be saved to: <full path>`
+
+If HTML output is enabled, it prompts:
+
+```text
+Enter HTML output file path (default: output.html):
+Include server evidence in HTML (request headers + response body)? (y/n):
+Include detailed version notes in HTML? (y/n, default: y):
+```
+
+Then prints:
+
+- `HTML report will be saved to: <full path>`
 
 Then it prints the host count:
 
@@ -155,6 +184,10 @@ If no version is found, the result is printed as:
 After the scan completes, if saving is enabled, the tool prints:
 
 - `Output saved to: <full path>`
+
+If HTML saving is enabled, it also prints:
+
+- `HTML report saved to: <full path>`
 
 Then it returns to the menu with:
 
@@ -239,3 +272,19 @@ If option `0` is selected, the tool prints:
 
 - SSL bypass mode is insecure and should only be used for testing/diagnostics.
 - Some sites may still require authentication or block requests based on security policy.
+
+## HTML Report Details
+
+When HTML output is enabled, the report can include:
+
+- A table of contents with domain + page/section index links.
+- A per-host table row with:
+  - Domain
+  - Product version mapping
+  - LibraryVersion
+  - POC (endpoint where version was detected)
+- Optional detail boxes beneath each row:
+  - `Version Details`
+  - `Request Headers`
+  - `Response Body (HTTP <status>)`
+
