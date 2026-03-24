@@ -2,7 +2,7 @@
 
 A C# console tool that scans SharePoint hosts and detects version information using multiple endpoints and fallbacks.
 
-## Screenshot
+## Home Banner
 
 ![SharePoint Version Scanner](images/image1.png)
 
